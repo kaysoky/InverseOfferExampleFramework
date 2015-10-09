@@ -30,8 +30,10 @@
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
 
-#include <stout/os.hpp>
+#include <stout/hashmap.hpp>
 #include <stout/hashset.hpp>
+#include <stout/option.hpp>
+#include <stout/os.hpp>
 #include <stout/stringify.hpp>
 
 using namespace mesos::v1;
@@ -44,12 +46,22 @@ using std::vector;
 
 using mesos::v1::FrameworkInfo;
 using mesos::v1::Resources;
+using mesos::v1::TimeInfo;
 
 using mesos::v1::scheduler::Call;
 using mesos::v1::scheduler::Event;
 
 const float CPUS_PER_TASK = 0.2;
 const int32_t MEM_PER_TASK = 32;
+
+
+// Holds a sleeper and its bed.  Plus when the bed might be taken away.
+struct Sleeper
+{
+  TaskID id;
+  TimeInfo wake;
+};
+
 
 class ExampleScheduler : public process::Process<ExampleScheduler>
 {
@@ -118,41 +130,45 @@ public:
         }
 
         case Event::OFFERS: {
-          cout << endl << "Received an OFFERS event" << endl;
+          cout << "Received an OFFERS event with "
+               << event.offers().offers().size() << " offer(s) and "
+               << event.offers().inverse_offers().size() << " inverse offer(s)"
+               << endl;
           resourceOffers(google::protobuf::convert(event.offers().offers()));
+          inverseOffers(google::protobuf::convert(event.offers().inverse_offers()));
           break;
         }
 
         case Event::RESCIND: {
-          cout << endl << "Received a RESCIND event" << endl;
+          cout << "Received a RESCIND event" << endl;
           break;
         }
 
         case Event::UPDATE: {
-          cout << endl << "Received an UPDATE event" << endl;
+          cout << "Received an UPDATE event" << endl;
           statusUpdate(event.update().status());
           break;
         }
 
         case Event::MESSAGE: {
-          cout << endl << "Received a MESSAGE event" << endl;
+          cout << "Received a MESSAGE event" << endl;
           break;
         }
 
         case Event::FAILURE: {
-          cout << endl << "Received a FAILURE event" << endl;
+          cout << "Received a FAILURE event" << endl;
           break;
         }
 
         case Event::ERROR: {
-          cout << endl << "Received an ERROR event: "
+          cout << "Received an ERROR event: "
                << event.error().message() << endl;
           process::terminate(self());
           break;
         }
 
         case Event::HEARTBEAT: {
-          cout << endl << "Received a HEARTBEAT event" << endl;
+          cout << "Received a HEARTBEAT event" << endl;
           break;
         }
 
@@ -175,9 +191,49 @@ private:
       CHECK(framework.has_id());
       call.mutable_framework_id()->CopyFrom(framework.id());
 
+      // Find the riskiest sleeper (i.e. task running on the agent that is the
+      // next to be maintained).  We'll see if we can migrate this sleeper.
+      Option<AgentID> risky;
+      foreachpair (const AgentID& bed, const Sleeper& snorelax, sleepers) {
+        if (risky.isSome()) {
+          if (snorelax.wake.nanoseconds() <
+              sleepers[risky.get()].wake.nanoseconds()) {
+            risky = bed;
+          }
+        } else if (snorelax.wake.nanoseconds() > 0) {
+          risky = bed;
+        }
+      }
+
+      // Are there already `num_task` sleepers?
+      // Have `num_task` sleepers is this framework's SLA.
+      // More sleepers takes priority over dealing with maintenance.
+      bool need_more_sleep = sleepers.size() < num_tasks;
+
+      // Is there a better bed available for some sleeper?
+      // NOTE: This is mutually exclusive with `need_more_sleep`.
+      bool can_migrate = !need_more_sleep && risky.isSome() &&
+          (!offer.has_unavailability() ||
+            offer.unavailability().start().nanoseconds() >
+            sleepers[risky.get()].wake.nanoseconds());
+
       // Only one sleeper should occupy a single agent.
-      if (agent_beds.size() < num_tasks &&
-          !agent_beds.contains(offer.agent_id())) {
+      if ((can_migrate || need_more_sleep) &&
+          !sleepers.contains(offer.agent_id())) {
+        // "Wake" the old task first.
+        // We'll wait for a status update before modifying `sleepers`.
+        if (can_migrate) {
+          Call wakeup;
+          wakeup.mutable_framework_id()->CopyFrom(framework.id());
+          wakeup.set_type(Call::KILL);
+
+          Call::Kill* kill = call.mutable_kill();
+          kill->mutable_task_id()->CopyFrom(sleepers[risky.get()].id);
+          kill->mutable_agent_id()->CopyFrom(risky.get());
+
+          mesos.send(wakeup);
+        }
+
         TaskInfo task;
         task.mutable_task_id()->set_value(stringify(tasksLaunched));
         task.set_name("Sleeper Agent " + stringify(tasksLaunched++));
@@ -195,7 +251,14 @@ private:
         operation->set_type(Offer::Operation::LAUNCH);
         operation->mutable_launch()->add_task_infos()->CopyFrom(task);
 
-        agent_beds.insert(offer.agent_id());
+        // Save the new sleeper.
+        Sleeper snorelax;
+        snorelax.id = task.task_id();
+        if (offer.has_unavailability()) {
+          snorelax.wake = offer.unavailability().start();
+        }
+        sleepers[offer.agent_id()] = snorelax;
+
       } else {
         // Don't hog offers.
         call.set_type(Call::DECLINE);
@@ -207,6 +270,34 @@ private:
       mesos.send(call);
     }
   }
+
+
+  void inverseOffers(const vector<InverseOffer>& offers)
+  {
+    foreach (const InverseOffer& offer, offers) {
+      if (!sleepers.contains(offer.agent_id())) {
+        cout << "Inverse Offer received for Agent " << offer.agent_id()
+             << " which does not hold a sleeper." << endl;
+        continue;
+      }
+
+      // Take note of any agents that are scheduled for maintenance.
+      sleepers[offer.agent_id()].wake = offer.unavailability().start();
+
+      // TODO: Demonstrate some semantics for declining inverse offers.
+      // This framework always accepts inverse offers.
+      Call call;
+      CHECK(framework.has_id());
+      call.mutable_framework_id()->CopyFrom(framework.id());
+
+      call.set_type(Call::ACCEPT);
+      Call::Accept* accept = call.mutable_accept();
+      accept->add_offer_ids()->CopyFrom(offer.id());
+
+      mesos.send(call);
+    }
+  }
+
 
   void statusUpdate(const TaskStatus& status)
   {
@@ -235,7 +326,7 @@ private:
         status.state() == TASK_LOST ||
         status.state() == TASK_KILLED ||
         status.state() == TASK_FAILED) {
-      agent_beds.erase(status.agent_id());
+      sleepers.erase(status.agent_id());
     }
   }
 
@@ -254,7 +345,7 @@ private:
   uint64_t num_tasks;
 
   // Agents which currently hold a sleeper.
-  hashset<AgentID> agent_beds;
+  hashmap<AgentID, Sleeper> sleepers;
 
   int tasksLaunched;
 
