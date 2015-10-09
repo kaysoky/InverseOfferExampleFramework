@@ -50,3 +50,11 @@ if __name__ == '__main__':
             data=json.dumps(schedule))
 
         print result, result.text
+
+    # Print the list of machines in the order of maintenance.
+    order = sorted(windows, lambda a, b: a['unavailability']['start']['nanoseconds'] - b['unavailability']['start']['nanoseconds'])
+    order = [(x['machine_ids'][0]['ip'], x['unavailability']['start']['nanoseconds']) for x in order]
+    print "Earliest"
+    for ip, sec in order:
+        print ip
+    print "Latest"
