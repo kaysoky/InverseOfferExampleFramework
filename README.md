@@ -28,6 +28,15 @@ make
 example --master <host:port> -n <number of sleep tasks>
 ```
 
+## Open the Mesos UI
+
+Run:
+```
+python schedule.py <host:port>
+```
+
+Watch tasks get moved around.
+
 ## References
 
 * Most of the framework code is based on the [example framework here](https://github.com/apache/mesos/blob/master/src/examples/event_call_framework.cpp).
