@@ -42,6 +42,8 @@ if __name__ == '__main__':
                     'duration' : {'nanoseconds' : duration}
                 }} for x in machines]
 
+    # Package up the windows into a Maintenance Schedule.
+    # And post it!
     schedule = {'windows' : windows}
     if args.dry_run:
         print json.dumps(schedule, indent=2)

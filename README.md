@@ -23,18 +23,23 @@ wget -O /usr/local/include/picojson.h https://raw.githubusercontent.com/kazuho/p
 make
 ```
 
-## Run
+## Start Cluster
+Use [another script](https://github.com/kaysoky/mesos-integration).
+Add a long sleep (`time.sleep(6000)`) at the [end of the setup phase](https://github.com/kaysoky/mesos-integration/blob/master/test.py#L39).
+```
+python test.py NoSSL_Test
+```
+
+## Start Framework
 ```
 example --master <host:port> -n <number of sleep tasks>
 ```
 
 ## Open the Mesos UI
-
 Run:
 ```
 python schedule.py <host:port>
 ```
-
 Watch tasks get moved around.
 
 ## References
