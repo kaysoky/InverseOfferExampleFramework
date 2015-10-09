@@ -51,7 +51,8 @@ public:
   ExampleScheduler(
       const FrameworkInfo& _framework,
       const ExecutorInfo& _executor,
-      const string& master)
+      const string& master,
+      const uint64_t _num_tasks)
     : framework(_framework),
       executor(_executor),
       mesos(
@@ -59,6 +60,7 @@ public:
           process::defer(self(), &Self::connected),
           process::defer(self(), &Self::disconnected),
           process::defer(self(), &Self::received, lambda::_1)),
+      num_tasks(_num_tasks),
       state(INITIALIZING) {}
 
   ~ExampleScheduler() {}
@@ -159,9 +161,20 @@ public:
   // TODO: Write the 3 lambdas and a bunch of other things.
 
 private:
+  void finalize()
+  {
+    Call call;
+    CHECK(framework.has_id());
+    call.mutable_framework_id()->CopyFrom(framework.id());
+    call.set_type(Call::TEARDOWN);
+
+    mesos.send(call);
+  }
+
   FrameworkInfo framework;
   const ExecutorInfo executor;
   scheduler::Mesos mesos;
+  uint64_t num_tasks;
 
   enum State
   {
@@ -176,19 +189,30 @@ private:
 int main(int argc, char** argv)
 {
   string master;
+  string number;
   shift;
   while (true) {
     string s = argc > 0 ? argv[0] : "--help";
     if (argc > 1 && s == "--master") {
       master = argv[1];
       shift; shift;
+    } else if (argc > 1 && s == "-n") {
+      number = argv[1];
+      shift; shift;
     } else {
       break;
     }
   }
 
-  if (master.length() == 0) {
-    printf("Usage: example --master <ip>:<port>\n");
+  if (master.length() == 0 || number.length() == 0) {
+    printf("Usage: example --master <host>:<port> -n <number>\n");
+    exit(1);
+  }
+
+  char* end;
+  long num_tasks = strtol(number.c_str(), &end, 10);
+  if (errno == ERANGE || num_tasks <= 0) {
+    printf("Expected integer greater than zero for -n\n");
     exit(1);
   }
 
@@ -201,7 +225,8 @@ int main(int argc, char** argv)
   ExecutorInfo executor;
   executor.mutable_executor_id()->set_value("default");
 
-  ExampleScheduler* scheduler = new ExampleScheduler(framework, executor, master);
+  ExampleScheduler* scheduler =
+    new ExampleScheduler(framework, executor, master, num_tasks);
 
   process::spawn(scheduler);
   process::wait(scheduler);
