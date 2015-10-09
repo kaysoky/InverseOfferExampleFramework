@@ -42,7 +42,6 @@ using std::queue;
 using std::string;
 using std::vector;
 
-using mesos::v1::ExecutorInfo;
 using mesos::v1::FrameworkInfo;
 using mesos::v1::Resources;
 
@@ -57,11 +56,9 @@ class ExampleScheduler : public process::Process<ExampleScheduler>
 public:
   ExampleScheduler(
       const FrameworkInfo& _framework,
-      const ExecutorInfo& _executor,
       const string& master,
       const uint64_t _num_tasks)
     : framework(_framework),
-      executor(_executor),
       mesos(
           master,
           process::defer(self(), &Self::connected),
@@ -174,6 +171,10 @@ private:
           "cpus:" + stringify(CPUS_PER_TASK) +
           ";mem:" + stringify(MEM_PER_TASK)).get();
 
+      Call call;
+      CHECK(framework.has_id());
+      call.mutable_framework_id()->CopyFrom(framework.id());
+
       // Only one sleeper should occupy a single agent.
       if (agent_beds.size() < num_tasks &&
           !agent_beds.contains(offer.agent_id())) {
@@ -181,12 +182,10 @@ private:
         task.mutable_task_id()->set_value(stringify(tasksLaunched));
         task.set_name("Sleeper Agent " + stringify(tasksLaunched++));
         task.mutable_agent_id()->MergeFrom(offer.agent_id());
-        task.mutable_executor()->MergeFrom(executor);
         task.mutable_resources()->CopyFrom(TASK_RESOURCES);
+        task.mutable_command()->set_value(
+            "while [ true ]; do echo ZZZzzz...; sleep 5; done");
 
-        Call call;
-        CHECK(framework.has_id());
-        call.mutable_framework_id()->CopyFrom(framework.id());
         call.set_type(Call::ACCEPT);
 
         Call::Accept* accept = call.mutable_accept();
@@ -196,15 +195,27 @@ private:
         operation->set_type(Offer::Operation::LAUNCH);
         operation->mutable_launch()->add_task_infos()->CopyFrom(task);
 
-        mesos.send(call);
-
         agent_beds.insert(offer.agent_id());
+      } else {
+        // Don't hog offers.
+        call.set_type(Call::DECLINE);
+
+        Call::Decline* decline = call.mutable_decline();
+        decline->add_offer_ids()->CopyFrom(offer.id());
       }
+
+      mesos.send(call);
     }
   }
 
   void statusUpdate(const TaskStatus& status)
   {
+    cout << "Task " << status.task_id() << " is in state " << status.state();
+    if (status.has_message()) {
+      cout << " with message '" << status.message() << "'";
+    }
+    cout << endl;
+
     if (status.has_uuid()) {
       Call call;
       CHECK(framework.has_id());
@@ -239,7 +250,6 @@ private:
   }
 
   FrameworkInfo framework;
-  const ExecutorInfo executor;
   scheduler::Mesos mesos;
   uint64_t num_tasks;
 
@@ -293,14 +303,8 @@ int main(int argc, char** argv)
   framework.set_user(os::user().get());
   framework.set_name("Inverse Offer Example Framework");
 
-  // The default executor is good enough.
-  ExecutorInfo executor;
-  executor.mutable_executor_id()->set_value("default");
-  executor.mutable_command()->set_value(
-      "while [ true ]; do echo 'ZZZzzz...'; sleep 1; done");
-
   ExampleScheduler* scheduler =
-    new ExampleScheduler(framework, executor, master, num_tasks);
+    new ExampleScheduler(framework, master, num_tasks);
 
   process::spawn(scheduler);
   process::wait(scheduler);
