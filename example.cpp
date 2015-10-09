@@ -32,6 +32,7 @@
 
 #include <stout/hashmap.hpp>
 #include <stout/hashset.hpp>
+#include <stout/none.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
 #include <stout/stringify.hpp>
@@ -182,6 +183,20 @@ public:
 private:
   void resourceOffers(const vector<Offer>& offers)
   {
+    // Find the riskiest sleeper (i.e. task running on the agent that is the
+    // next to be maintained).  We'll see if we can migrate this sleeper.
+    Option<AgentID> risky;
+    foreachpair (const AgentID& bed, const Sleeper& snorelax, sleepers) {
+      if (risky.isSome()) {
+        if (snorelax.wake.nanoseconds() <
+            sleepers[risky.get()].wake.nanoseconds()) {
+          risky = bed;
+        }
+      } else if (snorelax.wake.nanoseconds() > 0) {
+        risky = bed;
+      }
+    }
+
     foreach (const Offer& offer, offers) {
       static const Resources TASK_RESOURCES = Resources::parse(
           "cpus:" + stringify(CPUS_PER_TASK) +
@@ -190,20 +205,6 @@ private:
       Call call;
       CHECK(framework.has_id());
       call.mutable_framework_id()->CopyFrom(framework.id());
-
-      // Find the riskiest sleeper (i.e. task running on the agent that is the
-      // next to be maintained).  We'll see if we can migrate this sleeper.
-      Option<AgentID> risky;
-      foreachpair (const AgentID& bed, const Sleeper& snorelax, sleepers) {
-        if (risky.isSome()) {
-          if (snorelax.wake.nanoseconds() <
-              sleepers[risky.get()].wake.nanoseconds()) {
-            risky = bed;
-          }
-        } else if (snorelax.wake.nanoseconds() > 0) {
-          risky = bed;
-        }
-      }
 
       // Are there already `num_task` sleepers?
       // Have `num_task` sleepers is this framework's SLA.
@@ -223,15 +224,20 @@ private:
         // "Wake" the old task first.
         // We'll wait for a status update before modifying `sleepers`.
         if (can_migrate) {
+          cout << "Migrating task " << sleepers[risky.get()].id << endl;
+
           Call wakeup;
           wakeup.mutable_framework_id()->CopyFrom(framework.id());
           wakeup.set_type(Call::KILL);
 
-          Call::Kill* kill = call.mutable_kill();
+          Call::Kill* kill = wakeup.mutable_kill();
           kill->mutable_task_id()->CopyFrom(sleepers[risky.get()].id);
           kill->mutable_agent_id()->CopyFrom(risky.get());
 
           mesos.send(wakeup);
+
+          // We'll just migrate one task per round of offers.
+          risky = None();
         }
 
         TaskInfo task;
