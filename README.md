@@ -24,10 +24,15 @@ make
 ```
 
 ## Start Cluster
-Use [another script](https://github.com/kaysoky/mesos-integration).
-Add a long sleep (`time.sleep(6000)`) at the [end of the setup phase](https://github.com/kaysoky/mesos-integration/blob/master/test.py#L39).
+This example assumes the cluster is all running locally.
+Run this to open up loopback interfaces for agents to use:
 ```
-python test.py NoSSL_Test
+sudo python loopback.py -n 9 --open
+```
+
+Run this to start a cluster:
+```
+python start_mesos.py -n 10 /path/to/mesos/build/bin
 ```
 
 ## Start Framework

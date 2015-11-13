@@ -9,7 +9,7 @@ if __name__ == '__main__':
         description='Constructs a random sliding maintenance schedule.')
     parser.add_argument(
         'master', type=str,
-        help='Host and port of the Mesos Master')
+        help='Host and port of the Mesos Master.')
     parser.add_argument(
         '-d', '--dry-run', action='store_true',
         help='Just prints the schedule.')
