@@ -47,6 +47,20 @@ python schedule.py <host:port>
 ```
 Watch tasks get moved around.
 
+## Perform "Maintenance"
+Bring a machine down:
+```
+python machine.py <master host:port> <agent host> --down
+```
+You'll notice that this also kills the agent.
+You'll need to restart it manually.
+However, the agent won't be allowed to register until the machine is brought back up.
+
+Bring a machine back up:
+```
+python machine.py <master host:port> <agent host> --up
+```
+
 ## References
 
 * Most of the framework code is based on the [example framework here](https://github.com/apache/mesos/blob/master/src/examples/event_call_framework.cpp).
