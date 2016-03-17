@@ -215,6 +215,18 @@ private:
       CHECK(framework.has_id());
       call.mutable_framework_id()->CopyFrom(framework.id());
 
+      // Check if this offer is big enough.
+      if (!Resources(offer.resources()).flatten().contains(TASK_RESOURCES)) {
+        call.set_type(Call::DECLINE);
+
+        Call::Decline* decline = call.mutable_decline();
+        decline->add_offer_ids()->CopyFrom(offer.id());
+        decline->mutable_filters()->set_refuse_seconds(600);
+
+        mesos->send(call);
+        continue;
+      }
+
       // Are there already `num_task` sleepers?
       // Have `num_task` sleepers is this framework's SLA.
       // More sleepers takes priority over dealing with maintenance.
@@ -280,6 +292,7 @@ private:
 
         Call::Decline* decline = call.mutable_decline();
         decline->add_offer_ids()->CopyFrom(offer.id());
+        decline->mutable_filters()->set_refuse_seconds(600);
       }
 
       mesos->send(call);
@@ -341,7 +354,8 @@ private:
     if (status.state() == TASK_FINISHED ||
         status.state() == TASK_LOST ||
         status.state() == TASK_KILLED ||
-        status.state() == TASK_FAILED) {
+        status.state() == TASK_FAILED ||
+        status.state() == TASK_ERROR) {
       sleepers.erase(status.agent_id());
     }
   }
