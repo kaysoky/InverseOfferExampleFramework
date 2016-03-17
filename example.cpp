@@ -1,56 +1,57 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <iostream>
-#include <queue>
 #include <string>
 #include <vector>
+#include <queue>
 
 #include <mesos/v1/mesos.hpp>
 #include <mesos/v1/resources.hpp>
 #include <mesos/v1/scheduler.hpp>
 
-#include <process/defer.hpp>
 #include <process/delay.hpp>
+#include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
 
+#include <stout/check.hpp>
+#include <stout/exit.hpp>
+#include <stout/flags.hpp>
+#include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
-#include <stout/hashset.hpp>
+#include <stout/lambda.hpp>
 #include <stout/none.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
+#include <stout/path.hpp>
 #include <stout/stringify.hpp>
 
 using namespace mesos::v1;
 
+using std::cerr;
 using std::cout;
 using std::endl;
 using std::queue;
 using std::string;
 using std::vector;
 
-using mesos::v1::FrameworkInfo;
-using mesos::v1::Resources;
-using mesos::v1::TimeInfo;
-
 using mesos::v1::scheduler::Call;
 using mesos::v1::scheduler::Event;
+
 
 const float CPUS_PER_TASK = 0.2;
 const int32_t MEM_PER_TASK = 32;
@@ -63,20 +64,15 @@ struct Sleeper
   TimeInfo wake;
 };
 
-
 class ExampleScheduler : public process::Process<ExampleScheduler>
 {
 public:
   ExampleScheduler(
       const FrameworkInfo& _framework,
-      const string& master,
-      const uint64_t _num_tasks)
+      const string& _master,
+      const uint32_t _num_tasks)
     : framework(_framework),
-      mesos(
-          master,
-          process::defer(self(), &Self::connected),
-          process::defer(self(), &Self::disconnected),
-          process::defer(self(), &Self::received, lambda::_1)),
+      master(_master),
       num_tasks(_num_tasks),
       tasksLaunched(0),
       state(INITIALIZING) {}
@@ -99,11 +95,7 @@ public:
     Call::Subscribe* subscribe = call.mutable_subscribe();
     subscribe->mutable_framework_info()->CopyFrom(framework);
 
-    if (framework.has_id()) {
-      subscribe->set_force(true);
-    }
-
-    mesos.send(call);
+    mesos->send(call);
 
     process::delay(
         Seconds(1),
@@ -124,9 +116,12 @@ public:
 
       switch (event.type()) {
         case Event::SUBSCRIBED: {
-          cout << "Subscribed with ID '" << framework.id() << "'" << endl;
+          cout << "Received a SUBSCRIBED event" << endl;
+
           framework.mutable_id()->CopyFrom(event.subscribed().framework_id());
           state = SUBSCRIBED;
+
+          cout << "Subscribed with ID '" << framework.id() << endl;
           break;
         }
 
@@ -147,6 +142,7 @@ public:
 
         case Event::UPDATE: {
           cout << "Received an UPDATE event" << endl;
+
           statusUpdate(event.update().status());
           break;
         }
@@ -179,6 +175,19 @@ public:
       }
     }
   }
+
+protected:
+virtual void initialize()
+{
+  // We initialize the library here to ensure that callbacks are only invoked
+  // after the process has spawned.
+  mesos.reset(new scheduler::Mesos(
+      master,
+      mesos::ContentType::PROTOBUF,
+      process::defer(self(), &Self::connected),
+      process::defer(self(), &Self::disconnected),
+      process::defer(self(), &Self::received, lambda::_1)));
+}
 
 private:
   void resourceOffers(const vector<Offer>& offers)
@@ -234,7 +243,7 @@ private:
           kill->mutable_task_id()->CopyFrom(sleepers[risky.get()].id);
           kill->mutable_agent_id()->CopyFrom(risky.get());
 
-          mesos.send(wakeup);
+          mesos->send(wakeup);
 
           // We'll just migrate one task per round of offers.
           risky = None();
@@ -273,7 +282,7 @@ private:
         decline->add_offer_ids()->CopyFrom(offer.id());
       }
 
-      mesos.send(call);
+      mesos->send(call);
     }
   }
 
@@ -300,7 +309,7 @@ private:
       Call::Accept* accept = call.mutable_accept();
       accept->add_offer_ids()->CopyFrom(offer.id());
 
-      mesos.send(call);
+      mesos->send(call);
     }
   }
 
@@ -308,6 +317,7 @@ private:
   void statusUpdate(const TaskStatus& status)
   {
     cout << "Task " << status.task_id() << " is in state " << status.state();
+
     if (status.has_message()) {
       cout << " with message '" << status.message() << "'";
     }
@@ -324,7 +334,7 @@ private:
       ack->mutable_task_id()->CopyFrom(status.task_id());
       ack->set_uuid(status.uuid());
 
-      mesos.send(call);
+      mesos->send(call);
     }
 
     // Keep track of which sleepers are still sleeping.
@@ -343,69 +353,99 @@ private:
     call.mutable_framework_id()->CopyFrom(framework.id());
     call.set_type(Call::TEARDOWN);
 
-    mesos.send(call);
+    mesos->send(call);
   }
 
   FrameworkInfo framework;
-  scheduler::Mesos mesos;
-  uint64_t num_tasks;
+  const string master;
+  const uint32_t num_tasks;
 
   // Agents which currently hold a sleeper.
   hashmap<AgentID, Sleeper> sleepers;
 
   int tasksLaunched;
 
+  process::Owned<scheduler::Mesos> mesos;
+
   enum State
   {
-    INITIALIZING,
-    SUBSCRIBED,
-    DISCONNECTED,
+    INITIALIZING = 0,
+    SUBSCRIBED = 1,
+    DISCONNECTED = 2
   } state;
 };
 
 
-#define shift argc--, argv++
+class Flags : public flags::FlagsBase
+{
+public:
+  Flags()
+  {
+    add(&role,
+        "role",
+        "Role to use when registering.",
+        "*");
+
+    add(&master,
+        "master",
+        "Master to connect to.",
+        [](const Option<string>& value) -> Option<Error> {
+          if (value.isNone()) {
+            return Error("Missing --master");
+          }
+
+          return None();
+        });
+
+    add(&num_tasks,
+        "num_tasks",
+        "Number of sleeps to start.",
+        1,
+        [](int value) -> Option<Error> {
+          if (value <= 0) {
+            return Error("Expected --num_tasks greater than zero");
+          }
+
+          return None();
+        });
+  }
+
+  string role;
+  Option<string> master;
+  int num_tasks;
+};
+
+
 int main(int argc, char** argv)
 {
-  string master;
-  string number;
-  shift;
-  while (true) {
-    string s = argc > 0 ? argv[0] : "--help";
-    if (argc > 1 && s == "--master") {
-      master = argv[1];
-      shift; shift;
-    } else if (argc > 1 && s == "-n") {
-      number = argv[1];
-      shift; shift;
-    } else {
-      break;
-    }
-  }
+  Flags flags;
+  Try<Nothing> load = flags.load(None(), argc, argv);
 
-  if (master.length() == 0 || number.length() == 0) {
-    printf("Usage: example --master <host>:<port> -n <number>\n");
-    exit(1);
-  }
-
-  char* end;
-  long num_tasks = strtol(number.c_str(), &end, 10);
-  if (errno == ERANGE || num_tasks <= 0) {
-    printf("Expected integer greater than zero for -n\n");
-    exit(1);
+  if (load.isError()) {
+    cerr << flags.usage(load.error()) << endl;
+    EXIT(1);
   }
 
   // Nothing special to say about this framework.
   FrameworkInfo framework;
   framework.set_user(os::user().get());
   framework.set_name("Inverse Offer Example Framework");
+  framework.set_role(flags.role);
 
-  ExampleScheduler* scheduler =
-    new ExampleScheduler(framework, master, num_tasks);
+  /*
+  value = os::getenv("DEFAULT_PRINCIPAL");
+  if (value.isNone()) {
+    EXIT(1) << "Expecting authentication principal in the environment";
+  }
 
-  process::spawn(scheduler);
-  process::wait(scheduler);
+  framework.set_principal(value.get());
+  */
 
-  delete scheduler;
+  process::Owned<ExampleScheduler> scheduler(
+      new ExampleScheduler(framework, flags.master.get(), flags.num_tasks));
+
+  process::spawn(scheduler.get());
+  process::wait(scheduler.get());
+
   return EXIT_SUCCESS;
 }
