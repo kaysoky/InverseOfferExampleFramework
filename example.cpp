@@ -26,6 +26,8 @@
 #include <process/clock.hpp>
 #include <process/defer.hpp>
 #include <process/delay.hpp>
+#include <process/help.hpp>
+#include <process/http.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
@@ -40,6 +42,7 @@
 #include <stout/flags.hpp>
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
+#include <stout/json.hpp>
 #include <stout/lambda.hpp>
 #include <stout/none.hpp>
 #include <stout/option.hpp>
@@ -59,8 +62,14 @@ using std::vector;
 using mesos::v1::scheduler::Call;
 using mesos::v1::scheduler::Event;
 
+using process::AUTHENTICATION;
 using process::Clock;
 using process::defer;
+using process::DESCRIPTION;
+using process::HELP;
+using process::TLDR;
+
+using process::http::OK;
 
 using process::metrics::Gauge;
 using process::metrics::Counter;
@@ -85,7 +94,8 @@ public:
       const FrameworkInfo& _framework,
       const string& _master,
       const uint32_t _num_tasks)
-    : framework(_framework),
+    : ProcessBase("framework"),
+      framework(_framework),
       master(_master),
       num_tasks(_num_tasks),
       tasks_launched(0),
@@ -231,17 +241,35 @@ public:
   }
 
 protected:
-virtual void initialize()
-{
-  // We initialize the library here to ensure that callbacks are only invoked
-  // after the process has spawned.
-  mesos.reset(new scheduler::Mesos(
-      master,
-      mesos::ContentType::PROTOBUF,
-      process::defer(self(), &Self::connected),
-      process::defer(self(), &Self::disconnected),
-      process::defer(self(), &Self::received, lambda::_1)));
-}
+  virtual void initialize()
+  {
+    // We initialize the library here to ensure that callbacks are only invoked
+    // after the process has spawned.
+    mesos.reset(new scheduler::Mesos(
+        master,
+        mesos::ContentType::PROTOBUF,
+        process::defer(self(), &Self::connected),
+        process::defer(self(), &Self::disconnected),
+        process::defer(self(), &Self::received, lambda::_1)));
+
+    // Special route for metrics.
+    route(
+        "/counters",
+        HELP(
+            TLDR("List of counter-type metrics."),
+            DESCRIPTION("Returns 202 Accepted iff the request is accepted."),
+            AUTHENTICATION(false)),
+        [this](const process::http::Request& request) {
+          JSON::Array array;
+          array.values.push_back("inverse_offer_framework/offers_received");
+          array.values.push_back(
+              "inverse_offer_framework/inverse_offers_received");
+          array.values.push_back("inverse_offer_framework/sleepers_killed");
+          array.values.push_back("inverse_offer_framework/sleepers_alarmed");
+
+          return OK(array, request.url.query.get("jsonp"));
+        });
+  }
 
 private:
   void resourceOffers(const vector<Offer>& offers)
@@ -543,15 +571,6 @@ int main(int argc, char** argv)
   framework.set_user(os::user().get());
   framework.set_name("Inverse Offer Example Framework");
   framework.set_role(flags.role);
-
-  /*
-  value = os::getenv("DEFAULT_PRINCIPAL");
-  if (value.isNone()) {
-    EXIT(1) << "Expecting authentication principal in the environment";
-  }
-
-  framework.set_principal(value.get());
-  */
 
   process::Owned<ExampleScheduler> scheduler(
       new ExampleScheduler(framework, flags.master.get(), flags.num_tasks));
