@@ -23,10 +23,17 @@
 #include <mesos/v1/resources.hpp>
 #include <mesos/v1/scheduler.hpp>
 
+#include <process/clock.hpp>
+#include <process/defer.hpp>
 #include <process/delay.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
+#include <process/time.hpp>
+
+#include <process/metrics/counter.hpp>
+#include <process/metrics/gauge.hpp>
+#include <process/metrics/metrics.hpp>
 
 #include <stout/check.hpp>
 #include <stout/exit.hpp>
@@ -52,6 +59,12 @@ using std::vector;
 using mesos::v1::scheduler::Call;
 using mesos::v1::scheduler::Event;
 
+using process::Clock;
+using process::defer;
+
+using process::metrics::Gauge;
+using process::metrics::Counter;
+
 
 const float CPUS_PER_TASK = 0.2;
 const int32_t MEM_PER_TASK = 32;
@@ -64,6 +77,7 @@ struct Sleeper
   TimeInfo wake;
 };
 
+
 class ExampleScheduler : public process::Process<ExampleScheduler>
 {
 public:
@@ -74,10 +88,46 @@ public:
     : framework(_framework),
       master(_master),
       num_tasks(_num_tasks),
-      tasksLaunched(0),
-      state(INITIALIZING) {}
+      tasks_launched(0),
+      state(INITIALIZING),
+      uptime_secs(
+          "inverse_offer_framework/uptime_secs",
+          defer(this, &Self::_uptime_secs)),
+      subscribed(
+          "inverse_offer_framework/subscribed",
+          defer(this, &Self::_subscribed)),
+      offers_received(
+          "inverse_offer_framework/offers_received"),
+      inverse_offers_received(
+          "inverse_offer_framework/inverse_offers_received"),
+      sleepers_killed(
+          "inverse_offer_framework/sleepers_killed"),
+      sleepers_alarmed(
+          "inverse_offer_framework/sleepers_alarmed"),
+      current_sleepers(
+          "inverse_offer_framework/current_sleepers",
+          defer(this, &Self::_current_sleepers))
+  {
+    start_time = Clock::now();
 
-  ~ExampleScheduler() {}
+    process::metrics::add(uptime_secs);
+    process::metrics::add(subscribed);
+    process::metrics::add(offers_received);
+    process::metrics::add(inverse_offers_received);
+    process::metrics::add(sleepers_killed);
+    process::metrics::add(sleepers_alarmed);
+    process::metrics::add(current_sleepers);
+  }
+
+  ~ExampleScheduler() {
+    process::metrics::remove(uptime_secs);
+    process::metrics::remove(subscribed);
+    process::metrics::remove(offers_received);
+    process::metrics::remove(inverse_offers_received);
+    process::metrics::remove(sleepers_killed);
+    process::metrics::remove(sleepers_alarmed);
+    process::metrics::remove(current_sleepers);
+  }
 
   // Continuously sends the `SUBSCRIBED` call until it is acknowledged.
   void connected()
@@ -130,8 +180,13 @@ public:
                << event.offers().offers().size() << " offer(s) and "
                << event.offers().inverse_offers().size() << " inverse offer(s)"
                << endl;
+
+          offers_received += event.offers().offers().size();
+          inverse_offers_received += event.offers().inverse_offers().size();
+
           resourceOffers(google::protobuf::convert(event.offers().offers()));
-          inverseOffers(google::protobuf::convert(event.offers().inverse_offers()));
+          inverseOffers(
+              google::protobuf::convert(event.offers().inverse_offers()));
           break;
         }
 
@@ -261,8 +316,8 @@ private:
         }
 
         TaskInfo task;
-        task.mutable_task_id()->set_value(stringify(tasksLaunched));
-        task.set_name("Sleeper Agent " + stringify(tasksLaunched++));
+        task.mutable_task_id()->set_value(stringify(tasks_launched));
+        task.set_name("Sleeper Agent " + stringify(tasks_launched++));
         task.mutable_agent_id()->MergeFrom(offer.agent_id());
         task.mutable_resources()->CopyFrom(TASK_RESOURCES);
         task.mutable_command()->set_value(
@@ -350,11 +405,20 @@ private:
     }
 
     // Keep track of which sleepers are still sleeping.
+    // These are un-expected terminal states.
     if (status.state() == TASK_FINISHED ||
         status.state() == TASK_LOST ||
-        status.state() == TASK_KILLED ||
         status.state() == TASK_FAILED ||
         status.state() == TASK_ERROR) {
+      ++sleepers_alarmed;
+
+      sleepers.erase(status.agent_id());
+    }
+
+    // This is the only expected terminal state.
+    if (status.state() == TASK_KILLED) {
+      ++sleepers_killed;
+
       sleepers.erase(status.agent_id());
     }
   }
@@ -378,7 +442,7 @@ private:
   // Agents which currently hold a sleeper.
   hashmap<AgentID, Sleeper> sleepers;
 
-  int tasksLaunched;
+  int tasks_launched;
 
   process::Owned<scheduler::Mesos> mesos;
 
@@ -388,6 +452,39 @@ private:
     SUBSCRIBED = 1,
     DISCONNECTED = 2
   } state;
+
+  /************
+   * Metrics! *
+   ************/
+
+  process::Time start_time;
+  double _uptime_secs()
+  {
+    return (Clock::now() - start_time).secs();
+  }
+
+  double _subscribed()
+  {
+    return state == SUBSCRIBED ? 1 : 0;
+  }
+
+  double _current_sleepers()
+  {
+    return sleepers.size();
+  }
+
+  process::metrics::Gauge uptime_secs;
+  process::metrics::Gauge subscribed;
+
+  process::metrics::Counter offers_received;
+  process::metrics::Counter inverse_offers_received;
+
+  // The only expected terminal state is TASK_KILLED.
+  // Other terminal states are considered incorrect.
+  process::metrics::Counter sleepers_killed;
+  process::metrics::Counter sleepers_alarmed;
+
+  process::metrics::Gauge current_sleepers;
 };
 
 
