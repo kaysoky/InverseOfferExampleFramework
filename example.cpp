@@ -160,7 +160,6 @@ public:
         case Event::ERROR: {
           cout << "Received an ERROR event: "
                << event.error().message() << endl;
-          process::terminate(self());
           break;
         }
 
@@ -362,12 +361,14 @@ private:
 
   void finalize()
   {
-    Call call;
-    CHECK(framework.has_id());
-    call.mutable_framework_id()->CopyFrom(framework.id());
-    call.set_type(Call::TEARDOWN);
+    if (state == SUBSCRIBED) {
+      Call call;
+      CHECK(framework.has_id());
+      call.mutable_framework_id()->CopyFrom(framework.id());
+      call.set_type(Call::TEARDOWN);
 
-    mesos->send(call);
+      mesos->send(call);
+    }
   }
 
   FrameworkInfo framework;
