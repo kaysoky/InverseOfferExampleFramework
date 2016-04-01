@@ -344,6 +344,10 @@ private:
 
           mesos->send(wakeup);
 
+          // Keep track of this sleeper in another map.
+          migrating[risky.get()] = sleepers[risky.get()];
+          sleepers.erase(risky.get());
+
           // We'll just migrate one task per round of offers.
           risky = None();
         }
@@ -445,14 +449,14 @@ private:
         status.state() == TASK_ERROR) {
       ++sleepers_alarmed;
 
-      sleepers.erase(status.agent_id());
+      migrating.erase(status.agent_id());
     }
 
     // This is the only expected terminal state.
     if (status.state() == TASK_KILLED) {
       ++sleepers_killed;
 
-      sleepers.erase(status.agent_id());
+      migrating.erase(status.agent_id());
     }
   }
 
@@ -474,6 +478,7 @@ private:
 
   // Agents which currently hold a sleeper.
   hashmap<AgentID, Sleeper> sleepers;
+  hashmap<AgentID, Sleeper> migrating;
 
   int tasks_launched;
 
@@ -503,7 +508,7 @@ private:
 
   double _current_sleepers()
   {
-    return sleepers.size();
+    return sleepers.size() + migrating.size();
   }
 
   process::metrics::Gauge uptime_secs;
