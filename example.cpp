@@ -166,6 +166,11 @@ public:
   void disconnected()
   {
     state = DISCONNECTED;
+
+    // If we don't checkpoint, getting disconnected will kill all current tasks.
+    if (!framework.checkpoint()) {
+      sleepers.clear();
+    }
   }
 
   void received(queue<Event> events)
@@ -548,11 +553,17 @@ public:
 
           return None();
         });
+
+    add(&checkpoint,
+        "checkpoint",
+        "Whether this framework should be checkpointed.",
+        false);
   }
 
   string role;
   Option<string> master;
   int num_tasks;
+  bool checkpoint;
 };
 
 
@@ -571,6 +582,7 @@ int main(int argc, char** argv)
   framework.set_user(os::user().get());
   framework.set_name("Inverse Offer Example Framework");
   framework.set_role(flags.role);
+  framework.set_checkpoint(flags.checkpoint);
 
   process::Owned<ExampleScheduler> scheduler(
       new ExampleScheduler(framework, flags.master.get(), flags.num_tasks));
