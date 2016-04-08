@@ -94,8 +94,7 @@ public:
       const FrameworkInfo& _framework,
       const string& _master,
       const uint32_t _num_tasks)
-    : ProcessBase("framework"),
-      framework(_framework),
+    : framework(_framework),
       master(_master),
       num_tasks(_num_tasks),
       tasks_launched(0),
@@ -256,24 +255,6 @@ protected:
         process::defer(self(), &Self::connected),
         process::defer(self(), &Self::disconnected),
         process::defer(self(), &Self::received, lambda::_1)));
-
-    // Special route for metrics.
-    route(
-        "/counters",
-        HELP(
-            TLDR("List of counter-type metrics."),
-            DESCRIPTION("Returns 202 Accepted iff the request is accepted."),
-            AUTHENTICATION(false)),
-        [this](const process::http::Request& request) {
-          JSON::Array array;
-          array.values.push_back("inverse_offer_framework/offers_received");
-          array.values.push_back(
-              "inverse_offer_framework/inverse_offers_received");
-          array.values.push_back("inverse_offer_framework/sleepers_killed");
-          array.values.push_back("inverse_offer_framework/sleepers_alarmed");
-
-          return OK(array, request.url.query.get("jsonp"));
-        });
   }
 
 private:
@@ -585,7 +566,7 @@ int main(int argc, char** argv)
   // Nothing special to say about this framework.
   FrameworkInfo framework;
   framework.set_user(os::user().get());
-  framework.set_name("Inverse Offer Example Framework");
+  framework.set_name("inverse-offer-example-framework");
   framework.set_role(flags.role);
   framework.set_checkpoint(flags.checkpoint);
 
