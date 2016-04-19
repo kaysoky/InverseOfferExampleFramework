@@ -26,7 +26,6 @@
 #include <process/clock.hpp>
 #include <process/defer.hpp>
 #include <process/delay.hpp>
-#include <process/help.hpp>
 #include <process/http.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
@@ -62,12 +61,8 @@ using std::vector;
 using mesos::v1::scheduler::Call;
 using mesos::v1::scheduler::Event;
 
-using process::AUTHENTICATION;
 using process::Clock;
 using process::defer;
-using process::DESCRIPTION;
-using process::HELP;
-using process::TLDR;
 
 using process::http::OK;
 
@@ -254,7 +249,8 @@ protected:
         mesos::ContentType::PROTOBUF,
         process::defer(self(), &Self::connected),
         process::defer(self(), &Self::disconnected),
-        process::defer(self(), &Self::received, lambda::_1)));
+        process::defer(self(), &Self::received, lambda::_1),
+        None()));
   }
 
 private:
