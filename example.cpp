@@ -213,6 +213,11 @@ public:
           break;
         }
 
+        case Event::RESCIND_INVERSE_OFFER: {
+          cout << "Received a RESCIND event" << endl;
+          break;
+        }
+
         case Event::UPDATE: {
           cout << "Received an UPDATE event" << endl;
 
@@ -395,9 +400,9 @@ private:
       CHECK(framework.has_id());
       call.mutable_framework_id()->CopyFrom(framework.id());
 
-      call.set_type(Call::ACCEPT);
-      Call::Accept* accept = call.mutable_accept();
-      accept->add_offer_ids()->CopyFrom(offer.id());
+      call.set_type(Call::ACCEPT_INVERSE_OFFERS);
+      Call::AcceptInverseOffers* accept = call.mutable_accept_inverse_offers();
+      accept->add_inverse_offer_ids()->CopyFrom(offer.id());
 
       mesos->send(call);
     }
