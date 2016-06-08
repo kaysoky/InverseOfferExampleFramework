@@ -186,16 +186,25 @@ public:
 
         case Event::OFFERS: {
           cout << "Received an OFFERS event with "
-               << event.offers().offers().size() << " offer(s) and "
-               << event.offers().inverse_offers().size() << " inverse offer(s)"
+               << event.offers().offers().size() << " offer(s)"
                << endl;
 
           offers_received += event.offers().offers().size();
-          inverse_offers_received += event.offers().inverse_offers().size();
 
           resourceOffers(google::protobuf::convert(event.offers().offers()));
-          inverseOffers(
-              google::protobuf::convert(event.offers().inverse_offers()));
+          break;
+        }
+
+        case Event::INVERSE_OFFERS: {
+          cout << "Received an INVERSE_OFFERS event with "
+               << event.inverse_offers().inverse_offers().size()
+               << " inverse offer(s)" << endl;
+
+          inverse_offers_received +=
+            event.inverse_offers().inverse_offers().size();
+
+          inverseOffers(google::protobuf::convert(
+              event.inverse_offers().inverse_offers()));
           break;
         }
 
@@ -552,7 +561,7 @@ public:
 int main(int argc, char** argv)
 {
   Flags flags;
-  Try<Nothing> load = flags.load(None(), argc, argv);
+  Try<flags::Warnings> load = flags.load(None(), argc, argv);
 
   if (load.isError()) {
     cerr << flags.usage(load.error()) << endl;
